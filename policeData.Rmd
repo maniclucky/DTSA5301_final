@@ -1,0 +1,80 @@
+---
+title: "Week3"
+author: "Willis Banks"
+date: "2023-11-18"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+```
+
+## Data Source
+
+The data below comes from the NYPD historical shooting incidents, as publicly available in the link below.
+
+```{r ingestion}
+dataURL <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+rawData <- read_csv(dataURL)
+```
+
+## Data Tidying
+
+The following was done to the data prior to analysis:
+
+* Occurrence date and time were cast from character/numeric to a single timestamp variable called OCCUR_TIMESTAMP
+* All descriptive encoding were cast as factor
+  + The existing data set is sufficiently clean to cast the assorted character descriptions directly (eg LOCATION_DESC)
+* Redundant columns were removed
+  + This includes occurrence date/time as well as the extra latitude/longitude column
+  
+After tidying, there is missing data several columns. Predominantly, the perpetrator description columns, as the missing data would be associated with a perpetrator that was never caught at the time of the data's publishing. For any perpetrator based analysis, these rows would need to be removed. Alternatively, one could use these rows to analyze the difference between crimes in which the perpatrator is un/known. In addition to this, location description data is also sparse. If specific building types are part of the analysis, one would have to remove those rows of data.
+
+```{r tidy}
+tidyData <- rawData
+factorCols = c("BORO","LOC_OF_OCCUR_DESC","PRECINCT","JURISDICTION_CODE","LOC_CLASSFCTN_DESC","LOCATION_DESC","PERP_AGE_GROUP","PERP_SEX","PERP_RACE","VIC_AGE_GROUP","VIC_SEX","VIC_RACE")
+dropCols = c("OCCUR_DATE","OCCUR_TIME","Lon_Lat")
+tidyData$OCCUR_TIMESTAMP <- mdy_hms(paste(tidyData$OCCUR_DATE,tidyData$OCCUR_TIME))
+tidyData = tidyData %>% mutate_at(factorCols,factor)
+tidyData = subset(tidyData,select = !(names(tidyData) %in% dropCols))
+summary(tidyData)
+```
+
+## Simple Analysis
+
+Below are a few simple plots for analysis. 
+
+The first is a bar plot of which boroughs the crimes were committed in. At a glance, Brooklyn and The Bronx dominate the other three boroughs, while Staten Island appears to be significantly safer than the rest by a good margin. The first question to ask is what factors may contribute to these boroughs being so much more/less safe compared to Manhattan or Queens. Or is there some reason that The Bronx and Brooklyn are potentially overrepresented? Or Staten Island underrepresented?
+
+```{r plots}
+p1 <- ggplot(tidyData, aes(x=BORO)) + geom_bar()
+print(p1)
+```
+The second is victim age vs homicide. This shows both the relative proportions of victims were in a given age bracket against how many died from their injuries. The data shows a couple things. 
+
+One, an almost unused category (1022) was present in the data that would need to be removed in further reports. A single data point on what seems to be an erroneously categorized incident only makes the plots harder to read.
+
+Two, the data runs with the general idea of younger adult age groups, specifically 18-24 and 25-44, are proportionally in more incidents and subsequently are more deaths. The first question to ask is what factors would contribute to these categories having a higher incidence count than the others.
+
+```{r plot2}
+p2 <- ggplot(tidyData, aes(x=STATISTICAL_MURDER_FLAG)) + geom_bar() + facet_wrap( ~ VIC_AGE_GROUP)
+print(p2)
+```
+## Model
+Below is a quick model to experiment with factors in the data. In this case the model is predicting the fatality of a given event based upon the victim's age. Given that the ages are not numeric, but categorical, it can be shown on a per-grouping basis the impactfulness of a given parameter on the model. As can be seen below, the p-value of every group, with the exception of 1022 (which I suspect to be erroneous), is significant. The only valid group that approached irrelevancy is the group of unknown victim ages. Further iterations of the model would likely incorporate these parameters.
+
+```{r model}
+linearModel <- lm(STATISTICAL_MURDER_FLAG ~ VIC_AGE_GROUP, data=tidyData)
+summary(linearModel)
+```
+
+## Bias
+
+All of the above plots are subject to the biases of the reporters (in this case, the NYPD). While larger items, such as location and age, are unlikely to be directly biased (eg, an officer in The Bronx is unlikely to report an incident to be elsewhere) they would be subject to systemic biases. If an area has an above average police presence, one would expect higher incident numbers as a results of those locations, and subsequently more would go unaccounted for in locations where there are fewer officers. Similarly, different victim groups are more/less likely to report an incident or for an incident to be noticed (eg an individual in the 45-64 range may have fewer social ties that would notice if they were to go missing).
+
+None of these address controlling for populations. While it could be done with the counts in the data, that yields a proportion of incidents without greater context. Better analysis would obtain population counts for New York City associated with the assorted groups and control that way. From there, it would be easier to determine if Brooklyn is really more dangerous than the other Boroughs, or if it simply has a higher population than the others.
+
+As for personal biases, there are none worth noting. This is being done as obliged by my coursework vs particular interest and the specific analyses were functionally a roll of the dice and very simple. The only significant bias was avoiding discussing any racial components. This is due to my own discomfort in analyzing a very complex issue with a limited, toy data set that I suspect is significantly biased in that regard.

@@ -1,0 +1,129 @@
+---
+title: "DSTA 5301 Final"
+author: "Willis Banks"
+date: "2023-12-06"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+```
+
+## Data Source
+
+The data below comes from the NYPD historical shooting incidents, as publicly available in the link below. The data is separated by file into United States and Global confirmed cases of COVID-19 and confirmed deaths due to COVID-19. Additionally, there is a reference table included for looking up things such as country population.
+
+```{r ingestion}
+dataURL_US_confirmed <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
+dataURL_US_deaths <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
+dataURL_Global_confirmed <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv"
+dataURL_Global_deaths <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv"
+dataURL_Global_recovered<- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_recovered_global.csv"
+dataURL_lookup <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+us_confirmed_raw <- read_csv(dataURL_US_confirmed,show_col_types = FALSE)
+us_deaths_raw <- read_csv(dataURL_US_deaths,show_col_types = FALSE)
+gl_confirmed_raw <- read_csv(dataURL_Global_confirmed,show_col_types = FALSE)
+gl_deaths_raw <- read_csv(dataURL_Global_deaths,show_col_types = FALSE)
+gl_recovered_raw <- read_csv(dataURL_Global_recovered,show_col_types = FALSE)
+lookup_raw <- read_csv(dataURL_lookup,show_col_types = FALSE)
+```
+
+## Cleaning
+
+Several steps to clean the data are performed. Ultimately, the four data sets for US/Global cases/deaths are joined together into two tables, one for both global and US data sets.
+
+* For the global data
+  * First, the table is pivoted such that each row corresponds to a date/location pair and the associated data, including the new cases and deaths values
+  * Latitude and longitude are removed as irrelevant to the analysis
+  * The two tables are joined together
+  * Province/State and Country/Region are joined to create CombinedKey
+  * Country/region and province/state are renamed to avoid using irregular characters
+  * Date is cast as a datetime variable
+  * Country population is joined to the table from the reference table
+  * The parameters of interest are selected explicitly to create the final table
+* For the US data
+  * Similarly to global data, the tables are pivoted to create cases/deaths per day
+  * Date is cast as a datetime variable
+  * Latitude and longitude are dropped
+  * The two table are joined into the final USA data table
+  
+  
+```{r cleaning}
+gl_confirmed <- gl_confirmed_raw %>% pivot_longer(cols = -c('Province/State','Country/Region',Lat,Long),names_to="date",values_to="cases") %>% select(-c(Lat,Long))
+gl_deaths <- gl_deaths_raw %>% pivot_longer(cols = -c('Province/State','Country/Region',Lat,Long),names_to="date",values_to="deaths") %>% select(-c(Lat,Long))
+global <- gl_confirmed %>% full_join(gl_deaths) %>% rename(Country_Region = 'Country/Region', Province_State = 'Province/State') %>% mutate(date=mdy(date))
+global <- global %>% filter(cases > 0) %>% unite("CombinedKey",c(Province_State,Country_Region),sep=", ",na.rm=TRUE,remove=FALSE)
+global <- global %>% left_join(lookup_raw, by = c("Province_State","Country_Region")) %>% select(-c(UID,FIPS)) %>% select(Province_State,Country_Region,date,cases,deaths,Population,CombinedKey)
+
+us_confirmed <- us_confirmed_raw %>% pivot_longer(cols = -(UID:Combined_Key),names_to = 'date', values_to = 'cases') %>% select(Admin2:cases) %>% mutate(date = mdy(date)) %>% select(-c(Lat,Long_))
+us_deaths <- us_deaths_raw %>% pivot_longer(cols = -(UID:Population),names_to = 'date', values_to = 'deaths') %>% select(Admin2:deaths) %>% mutate(date = mdy(date)) %>% select(-c(Lat,Long_))
+us <- us_confirmed %>% full_join(us_deaths)
+```
+
+## Visualizations
+
+The next series of cells generate visualizations regarding the propagation and lethality of COVID-19 in the USA as well as the state of Missouri.
+
+The first two graphs show the spread of COVID-19 on a logarithic scale, as well as the lethality, as a cumulative value. While interesting, it runs into the issue of log scales flattening. To a layman, it may appear that COVID slowed or stopped when, in reality, it's a matter of scale. Regardless of the size of the entire US versus the size of the state of Missouri, both plots exhibit this problem. This is not to say these plots are not useful, but it highlights the drawbacks of using such a plot.
+
+
+```{r visualizations_1}
+us_statewise <- us %>% group_by(Province_State, Country_Region, date) %>% summarise(cases=sum(cases),deaths=sum(deaths),Population=sum(Population)) %>% mutate(dpm = deaths*1000000/Population) %>% select(Province_State,Country_Region,date,cases,deaths,dpm,Population) %>% ungroup()
+us_total <- us %>% group_by(Country_Region,date) %>% summarize(cases=sum(cases),deaths=sum(deaths),Population=sum(Population)) %>% mutate(dpm = deaths*1000000/Population) %>% select(Country_Region,date,cases,deaths,dpm,Population) %>% ungroup()
+us_total %>% filter(cases>0) %>% ggplot(aes(x=date,y=cases)) + geom_line(aes(color='cases')) + geom_point(aes(color='cases')) + geom_line(aes(y=deaths,color='deaths')) + geom_point(aes(y=deaths,color='deaths')) + scale_y_log10() + theme(legend.position='bottom',axis.text.x=element_text(angle=90)) + labs(title='COVID19 in USA',y=NULL)
+```
+
+```{r visualizations_2}
+state <- 'Missouri'
+us_statewise %>% filter(Province_State == state) %>%  filter(cases>0) %>% ggplot(aes(x=date,y=cases)) + geom_line(aes(color='cases')) + geom_point(aes(color='cases')) + geom_line(aes(y=deaths,color='deaths')) + geom_point(aes(y=deaths,color='deaths')) + scale_y_log10() + theme(legend.position='bottom',axis.text.x=element_text(angle=90)) + labs(title='COVID19 in Missouri',y=NULL)
+```
+
+
+To address this issue, the second set of plots was created. While it does remain on a log scale, the new plots show only new cases and deaths on any given day. Because the scale is so much smaller, the flattening of the data isn't seen. Because the specific number of how many new cases/deaths on a given day varies greatly, the nice clean line of the former plots vanishes and the new plot appears messier. Though, if you look closely at certain parts of the data, information can be inferred about reporting methods. If you look to the Missouri plot,  you'll see that in 2022, there begins a series of regular points that have a smooth curve to them, while days between them drop to zero. This is due to all the cases and deaths being reported once a week.
+
+```{r vis_3}
+us_total <- us_total %>% mutate(new_cases = cases-lag(cases),new_deaths=deaths-lag(deaths))
+us_total %>% filter(cases>0) %>% ggplot(aes(x=date,y=new_cases)) + geom_line(aes(color='new_cases')) + geom_point(aes(color='new_cases')) + geom_line(aes(y=new_deaths,color='new_deaths')) + geom_point(aes(y=new_deaths,color='new_deaths')) + scale_y_log10() + theme(legend.position='bottom',axis.text.x=element_text(angle=90)) + labs(title='COVID19 in USA',y=NULL)
+```
+
+```{r vis_4}
+us_statewise <- us_statewise %>% mutate(new_cases = cases-lag(cases),new_deaths=deaths-lag(deaths))
+state <- 'Missouri'
+us_statewise %>% filter(Province_State == state) %>%  filter(cases>0) %>% ggplot(aes(x=date,y=new_cases)) + geom_line(aes(color='new_cases')) + geom_point(aes(color='new_cases')) + geom_line(aes(y=new_deaths,color='new_deaths')) + geom_point(aes(y=new_deaths,color='new_deaths')) + scale_y_log10() + theme(legend.position='bottom',axis.text.x=element_text(angle=90)) + labs(title='COVID19 in Missouri',y=NULL)
+```
+
+## Data Exploration
+
+To look deeper into the data, two more variables are generated, cases per thousand and deaths per thousand. These are population adjusted values so that one can more accurately compare across different populations. Below are shown the best and worst of the US data, as ordered by deaths per thousand (named dpt in the data).
+
+It is worth noting that, even with adjusted variables, direct comparison is not a silver bullet. American Samoa, the Northern Mariana Islands, and the Virgin Islands are the best on the list, but they are also very small populations compared to the rest of the United Stats, as well as islands. As such, their approaches to the pandemic could more easily reach a greater percentage of their population and they also have better capability to control individuals entering or leaving the areas. As such, even identical approaches executed in American Samoa and Arizona are liable to have very different numbers. As such, you should expect any model to have noise based on difficult to capture features such as these.
+
+```{r states_best}
+us_stateTotal <- us_statewise %>% group_by(Province_State) %>% summarize(deaths = max(deaths),cases=max(cases),population=max(Population),cpt = 1000*cases/population,dpt = 1000*deaths/population) %>% filter(cases>0,population>0)
+us_stateTotal %>% slice_min(dpt,n=10)
+```
+```{r states_worst}
+us_stateTotal %>% slice_max(dpt,n=10)
+```
+
+## Modeling
+Below is a simple linear regression model attempting to predict the value of deaths per thousand based on cases per thousand. While it is obvious that these two things are directly correlated and partially causal, it serves as an example of even a causal relationship to not be the only factor.
+
+Without addressing flawed reporting methods wherein non-COVID related deaths were attributed to it (which would serve as irreducible noise), this model demonstrates that factors beyond simple disease propagation are present that influence how many people died. If that were the only factor, one would expect a straight line. Because this data operates on a large scale, individual health choices become noise that can be disregarded.
+
+To make better use of this model, one approach would be to add new parameters to the model to better predict the deaths per thousand. If, for example, one of those parameters was reasonably controllable, one could use it to reduce the number of deaths during future pandemics.
+
+```{r linModel}
+obviousModel <- lm(dpt ~ cpt, data=us_stateTotal)
+us_oModel <- us_stateTotal %>% mutate(pred = predict(obviousModel)) %>% mutate(res2 = (pred-dpt)^2)
+summary(obviousModel)
+```
+Shown below is a plot of the predicted values, in red, against the real values, in blue. Also included are green values which represent the squared error of any given data point. It is only by luck that these values were on the same scale as dpt and so can be shown directly. In analysis, such points can be used to rapidly locate irregular values to see if there is an issue with the data or if that data point was significantly different than the rest in a useful way.
+
+```{r linModel_plot}
+us_oModel %>% ggplot() + geom_point(aes(x=cpt,y=dpt),color="blue") + geom_point(aes(x=cpt,y=pred),color="red") + geom_point(aes(x=cpt,y=res2),color="green") + theme(legend.position='top')
+```
